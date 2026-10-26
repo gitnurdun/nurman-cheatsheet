@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+#
+# nurman - a tiny cheatsheet viewer for bash commands.
+# Fetches cheat sheets from cheat.sh and caches them locally.
+
+NURMAN_HOME="${NURMAN_HOME:-$HOME/nurtools/nurman}"
+CACHE_DIR="${NURMAN_CACHE:-$NURMAN_HOME/cache}"
+NURMAN_BASE="https://cheat.sh"
+TIMEOUT="${NURMAN_TIMEOUT:-25}"
+VERSION="1.0.0"
+
+mkdir -p "$CACHE_DIR"
+
+usage() {
+    cat <<'EOF'
+nurman - cheatsheet fetcher for bash commands (source: cheat.sh)
+
+Usage:
+  nurman <cmd>            Show cheatsheet for <cmd> (from local cache first)
+  nurman -fresh <cmd>     Ignore cache, fetch a fresh copy from cheat.sh
+                          and update the cache
+  nurman -help            Show this help
+  nurman -version         Show version
+
+Cache is stored per-command at:
+  ~/nurtools/nurman/cache/<cmd>
+
+Examples:
+  nurman tar
+  nurman -fresh "git rebase"
+  nurman -help
+EOF
+}
+
+# sanitize a query into a safe cache filename
+sanitize() {
+    local s="$*"
+    s="${s//[^A-Za-z0-9._-]/-}"
+    s="${s,,}"
+    printf '%s\n' "$s"
+}
+
+# display content: pager when on a tty, plain cat otherwise
+display() {
+    if [ -t 1 ] && command -v less >/dev/null 2>&1; then
+        less -RFX
+    else
+        cat
+    fi
+}
+
+# fetch a cheatsheet from cheat.sh; returns 0 and prints on success
+# returns 1 and prints nothing when the topic is unknown
+fetch_sheet() {
+    local query="$1"
+    local urlq="${query// /+}"
+    local body code
+    body="$(curl -s --max-time "$TIMEOUT" "${NURMAN_BASE}/${urlq}?T")" || return 1
+    case "$body" in
+        *"Unknown topic."* | *"Unknown cheat sheet"*)
+            return 1
+            ;;
+    esac
+    printf '%s\n' "$body"
+}
+
+main() {
+    local mode="normal"
+    local query=""
+
+    case "${1:-}" in
+        -help|--help|-h)
+            usage
+            return 0
+            ;;
+        -version|--version|-v)
+            printf 'nurman version %s\n' "$VERSION"
+            return 0
+            ;;
+        -fresh|--fresh)
+            mode="fresh"
+            shift
+            ;;
+        --)
+            shift
+            ;;
+        ""|-*)
+            echo "nurman: missing command argument" >&2
+            usage >&2
+            return 1
+            ;;
+    esac
+
+    query="$*"
+    [ -z "$query" ] && { echo "nurman: missing command argument" >&2; usage >&2; return 1; }
+
+    local cachefile="$CACHE_DIR/$(sanitize "$query")"
+    local fresh=""
+
+    if [ "$mode" = "fresh" ]; then
+        fresh="$(fetch_sheet "$query")" || {
+            echo "nurman: no cheatsheet found for '$query' (or network error)" >&2
+            return 1
+        }
+        printf '%s\n' "$fresh" > "$cachefile"
+        printf '%s\n' "$fresh" | display
+        return 0
+    fi
+
+    # cache hit?
+    if [ -s "$cachefile" ]; then
+        display < "$cachefile"
+        return 0
+    fi
+
+    echo "nurman: no cache for '$query', fetching from cheat.sh ..." >&2
+    fresh="$(fetch_sheet "$query")" || {
+        echo "nurman: no cheatsheet found for '$query' (or network error)" >&2
+        return 1
+    }
+    printf '%s\n' "$fresh" > "$cachefile"
+    printf '%s\n' "$fresh" | display
+}
+
+main "$@"
